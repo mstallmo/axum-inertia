@@ -33,6 +33,7 @@ use maud::{html, PreEscaped};
 use serde::Deserialize;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
+use tera::{Context as TeraContext, Tera};
 
 pub struct Development {
     port: u16,
@@ -40,6 +41,8 @@ pub struct Development {
     lang: &'static str,
     title: &'static str,
     react: bool,
+    template_engine: Option<Tera>,
+    layout_template: Option<String>,
 }
 
 impl Default for Development {
@@ -50,6 +53,8 @@ impl Default for Development {
             lang: "en",
             title: "Vite",
             react: false,
+            template_engine: None,
+            layout_template: None,
         }
     }
 }
@@ -84,35 +89,87 @@ impl Development {
         self
     }
 
+    pub fn template_engine<T: AsRef<str>>(mut self, engine: Tera, layout_template: T) -> Self {
+        self.template_engine = Some(engine);
+        self.layout_template = Some(layout_template.as_ref().to_owned());
+
+        self
+    }
+
     pub fn into_config(self) -> InertiaConfig {
         let layout = Box::new(move |props| {
-            let vite_src = format!("http://localhost:{}/@vite/client", self.port);
-            let main_src = format!("http://localhost:{}/{}", self.port, self.main);
-            let preamble_code = if self.react {
-                Some(PreEscaped(self.build_react_preamble()))
-            } else {
-                None
-            };
-            html! {
-                html lang=(self.lang) {
-                    head {
-                        title { (self.title) }
-                        meta charset="utf-8";
-                        meta name="viewport" content="width=device-width, initial-scale=1.0";
-                        @if let Some(preamble_code) = preamble_code {
-                            script type="module" { (preamble_code) }
-                        }
-                        script type="module" src=(vite_src) {}
-                        script type="module" src=(main_src) {}
-                    }
+            if let Some(layout_template) = &self.layout_template {
+                let mut context = TeraContext::new();
 
-                    body {
-                        div #app data-page=(props) {}
+                let vite_client = html! { 
+                    script type="module" src=(format!("http://localhost:{}/@vite/client", self.port)) {}
+                }.into_string();
+                context.insert(
+                    "vite_client",
+                    &vite_client
+                );
+
+                let vite_main = html! {
+                    script type="module" src=(format!("http://localhost:{}/{}", self.port, self.main)) {}
+                }.into_string();
+                context.insert(
+                    "vite_main",
+                    &vite_main,
+                );
+
+                let react_preamble = html!{
+                    script type="module" { (PreEscaped(self.build_react_preamble())) }
+                }.into_string();
+                context.insert("vite_react_refresh", &react_preamble);
+
+                let app_element = html! {
+                    div #app data-page=(props) {}
+                }
+                .into_string();
+                context.insert("application", &app_element);
+
+                match &self.template_engine {
+                    Some(template_engine) => {
+                        match template_engine.render(layout_template, &context) {
+                            Ok(output) => output,
+                            Err(err) => {
+                                eprintln!("Failed to render template {err}");
+                                "".to_string()
+                            }
+                        }
+                    }
+                    None => "".to_string(),
+                }
+            } else {
+                let vite_src = format!("http://localhost:{}/@vite/client", self.port);
+                let main_src = format!("http://localhost:{}/{}", self.port, self.main);
+                let preamble_code = if self.react {
+                    Some(PreEscaped(self.build_react_preamble()))
+                } else {
+                    None
+                };
+                html! {
+                    html lang=(self.lang) {
+                        head {
+                            title { (self.title) }
+                            meta charset="utf-8";
+                            meta name="viewport" content="width=device-width, initial-scale=1.0";
+                            @if let Some(preamble_code) = preamble_code {
+                                script type="module" { (preamble_code) }
+                            }
+                            script type="module" src=(vite_src) {}
+                            script type="module" src=(main_src) {}
+                        }
+
+                        body {
+                            div #app data-page=(props) {}
+                        }
                     }
                 }
+                .into_string()
             }
-            .into_string()
         });
+
         InertiaConfig::new(None, layout)
     }
 
