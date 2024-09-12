@@ -194,6 +194,9 @@ pub struct Production {
     lang: &'static str,
     /// SHA1 hash of the contents of the manifest file.
     version: String,
+    template_engine: Option<Tera>,
+    layout_template: Option<String>,
+    asset_path: Option<String>,
 }
 
 impl Production {
@@ -233,6 +236,9 @@ impl Production {
             title: "Vite",
             lang: "en",
             version,
+            template_engine: None,
+            layout_template: None,
+            asset_path: None,
         })
     }
 
@@ -246,30 +252,92 @@ impl Production {
         self
     }
 
+    pub fn template_engine<T: AsRef<str>>(mut self, engine: Tera, layout_template: T) -> Self {
+        self.template_engine = Some(engine);
+        self.layout_template = Some(layout_template.as_ref().to_owned());
+
+        self
+    }
+
+    pub fn asset_path<P: AsRef<str>>(mut self, asset_path: P) -> Self {
+        self.asset_path = Some(asset_path.as_ref().to_owned());
+
+        self
+    }
+
     pub fn into_config(self) -> InertiaConfig {
         let layout = Box::new(move |props| {
-            let css = self.css.clone().unwrap_or("".to_string());
-            let main_path = format!("/{}", self.main.file);
+            let main_path = match &self.asset_path {
+                Some(asset_path) => format!("/{}/{}", asset_path, self.main.file),
+                None => format!("/{}", self.main.file),
+            };
             let main_integrity = self.main.integrity.clone();
-            html! {
-                html lang=(self.lang) {
-                    head {
-                        title { (self.title) }
-                        meta charset="utf-8";
-                        meta name="viewport" content="width=device-width, initial-scale=1.0";
-                        @if let Some(integrity) = main_integrity {
-                            script type="module" src=(main_path) integrity=(integrity) {}
-                        } else {
+
+            if let Some(template_engine) = &self.template_engine {
+                let mut context = TeraContext::new();
+
+                context.insert("vite_client","");
+                context.insert("vite_react_refresh", "");
+
+                let vite_main = match main_integrity {
+                    Some(main_integrity) => {
+                        html! {
+                            script type="module" src=(main_path) integrity=(main_integrity) {}
+                        }.into_string()
+                    },
+                    None => {
+                        html! {
                             script type="module" src=(main_path) {}
-                        }
-                        (PreEscaped(css))
+                        }.into_string()
                     }
-                    body {
-                        div #app data-page=(props) {}
+                };
+
+                context.insert(
+                    "vite_main",
+                    &vite_main,
+                );
+
+                let app_element = html! {
+                    div #app data-page=(props) {}
+                }
+                .into_string();
+                context.insert("application", &app_element);
+
+                match &self.layout_template {
+                    Some(layout_template) => {
+                        match template_engine.render(layout_template, &context) {
+                            Ok(output) => output,
+                            Err(err) => {
+                                eprintln!("Failed to render template {err}");
+                                "".to_string()
+                            }
+                        }
+                    },
+                    None => "".to_string()
+                }
+            } else {
+                let css = self.css.clone().unwrap_or("".to_string());
+                html! {
+                    html lang=(self.lang) {
+                        head {
+                            title { (self.title) }
+                            meta charset="utf-8";
+                            meta name="viewport" content="width=device-width, initial-scale=1.0";
+                            @if let Some(integrity) = main_integrity {
+                                script type="module" src=(main_path) integrity=(integrity) {}
+                            } else {
+                                script type="module" src=(main_path) {}
+                            }
+                            (PreEscaped(css))
+                        }
+                        body {
+                            div #app data-page=(props) {}
+                        }
                     }
                 }
+                .into_string()
             }
-            .into_string()
+
         });
         InertiaConfig::new(Some(self.version), layout)
     }
